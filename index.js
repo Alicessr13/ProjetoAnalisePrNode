@@ -1,235 +1,112 @@
-const azureDevOps = require('azure-devops-node-api');
-const { GoogleGenerativeAI } = require("@google/generative-ai");
-const readline = require('readline');
-require('dotenv').config();
+# 🤖 Azure DevOps AI Business Validator (Node.js)
 
-// Configurações
-const ORG_URL = process.env.ORG_URL;
-const ADO_PAT = process.env.ADO_PAT;
-const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
-const FIELD_UPDATE_ANALYSIS = process.env.FIELD_UPDATE_ANALYSIS;
+Ferramenta CLI de automação que integra o **Azure DevOps** com o **Google Gemini AI**. Diferente de linters ou analisadores estáticos comuns, **o foco desta ferramenta é a Regra de Negócio**.
 
-const askQuestion = (query) => {
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    return new Promise(resolve => rl.question(query, ans => { rl.close(); resolve(ans); }));
-};
+O script cruza as alterações de código (Diffs) dos Pull Requests diretamente com a **Descrição** e os **Critérios de Aceite** do Work Item vinculado, validando a entrega funcional.
 
-async function streamToString(readableStream) {
-    return new Promise((resolve, reject) => {
-        const chunks = [];
-        readableStream.on("data", (data) => chunks.push(data instanceof Buffer ? data : Buffer.from(data)));
-        readableStream.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-        readableStream.on("error", reject);
-    });
-}
+## 🎯 Filosofia de Análise
 
-// Função para analisar
-async function analisarPR(gitApi, prId, requirementsText) {
-    console.log(`\n--- Iniciando análise do PR #${prId} ---`);
-    
-    try {
-        const prDetails = await gitApi.getPullRequestById(prId);
-        
-        if (!prDetails) {
-            console.log(`   Erro: API retornou null para PR #${prId}.`);
-            return `<p style="color:red">Erro: PR #${prId} não encontrado/inacessível.</p>`;
-        }
+A IA foi configurada com um prompt específico para atuar como um **Tech Lead focado em Requisitos**.
 
-        const repoId = prDetails.repository.id;
-        const projectName = prDetails.repository.project.name;
-        const prTitle = prDetails.title;
+* ✅ **O que ela analisa:**
+* Aderência estrita aos Critérios de Aceite.
+* Implementação da lógica descrita na regra de negócio.
+* Se funcionalidades solicitadas no Card estão presentes no código.
 
-        console.log(`   Título: ${prTitle}`);
-        console.log("   Baixando arquivos...");
 
-        const diffs = await gitApi.getPullRequestIterations(repoId, prId);
-        if (!diffs || diffs.length === 0) {
-            return `<h3>PR #${prId}: ${prTitle}</h3><p><em>Nenhuma iteração encontrada.</em></p><hr>`;
-        }
+* 🚫 **O que ela IGNORA:**
+* Estilo de código (formatação, indentação, "code style").
+* Questões puramente técnicas que não afetam o funcionamento ou a regra de negócio.
 
-        const lastIterationId = diffs[diffs.length - 1].id;
-        const changes = await gitApi.getPullRequestIterationChanges(repoId, prId, lastIterationId);
 
-        let codeContext = "";
 
-        if (changes && changes.changeEntries) {
-            for (const entry of changes.changeEntries) {
-                const itemData = entry.item;
-                const changeType = entry.changeType;
+## ✨ Funcionalidades
 
-                if (!itemData || changeType === 16 || itemData.isFolder) continue;
+* **100% Configurável:** URL da organização e campos de destino definidos via variáveis de ambiente (`.env`).
+* **Integração Bidirecional:** Lê do Azure Repos/Boards e escreve o feedback no Work Item.
+* **Relatório Objetivo:** O feedback indica claramente: **APROVADO** ou **REPROVADO**, listando objetivamente o que falta para atingir o "Definition of Done" (DoD).
+* **Dois Modos de Operação:**
+1. **Por PR:** Analisa um PR específico e atualiza o Card vinculado.
+2. **Por Card:** Varre todas as relações do Card, identifica múltiplos PRs e gera um relatório consolidado.
 
-                const path = itemData.path;
-                const objectId = itemData.objectId;
 
-                try {
-                    const blobStream = await gitApi.getBlobContent(repoId, objectId, projectName, true);
-                    const contentText = await streamToString(blobStream);
+* **Resiliência:** Tratamento robusto para ignorar arquivos binários, deletados e correção automática de URLs de links do Azure.
 
-                    if (contentText.indexOf('\0') !== -1) {
-                        console.log(`   Binário ignorado: ${path}`);
-                        continue; 
-                    }
+## 🛠️ Tecnologias
 
-                    codeContext += `\n--- ARQUIVO: ${path} ---\n`;
-                    codeContext += contentText + "\n";
-                    console.log(`   Lido: ${path}`);
+* Node.js (v18+)
+* Azure DevOps Node API
+* Google Generative AI SDK (Gemini 2.5)
+* Dotenv
 
-                } catch (err) {
-                    console.log(`   Erro ao ler ${path}: ${err.message}`);
-                }
-            }
-        }
+## 📋 Pré-requisitos
 
-        if (!codeContext) {
-            return `<h3>PR #${prId}: ${prTitle}</h3><p><em>Nenhum código legível.</em></p><hr>`;
-        }
+1. **Node.js** instalado.
+2. **Conta no Azure DevOps** com permissão para ler repositórios e editar Work Items.
+3. **Chave de API** do Google AI Studio.
 
-        console.log(`   Enviando para o Gemini...`);
+## ⚙️ Configuração (.env)
 
-        const genAI = new GoogleGenerativeAI(GOOGLE_API_KEY);
-        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+Crie um arquivo `.env` na raiz do projeto (ou na mesma pasta do executável) com as chaves:
 
-        const prompt = `
-        Você é um Tech Lead. Analise este PR.
-        CONTEXTO DO CARD: ${requirementsText}
-        CÓDIGO DESTE PR: ${codeContext}
-        
-        INSTRUÇÕES:
-        1. Verifique se o código atende à DESCRIÇÃO e CRITÉRIOS DE ACEITE.
-        2. Ignore estilo, foque na REGRA DE NEGÓCIO.
-        3. Ignore questões técnicas que não impactam a regra de negócio.
-        4. Indique se faltar algo mas que possa estar em outro PR.
-        5. Diga se foi APROVADO ou REPROVADO.
-        6. Se estiver tudo certo, responda com o motivo da aprovação.
-        7. Se faltar algo, liste objetivamente.
-        `;
+```ini
+# URL da sua organização no Azure DevOps
+ORG_URL=https://dev.azure.com/SUA_ORGANIZACAO
 
-        const result = await model.generateContent(prompt);
-        const analise = result.response.text();
-        
-        return `
-        <div style="margin-bottom: 20px; border-bottom: 1px solid #ccc; padding-bottom: 10px;">
-            <h3>Análise PR #${prId}: ${prTitle}</h3>
-            ${analise.replace(/\n/g, '<br>')}
-        </div>
-        `;
+# Seu Personal Access Token (PAT)
+# Permissões necessárias: Code (Read), Work Items (Read & Write)
+ADO_PAT=seu_token_pat_aqui
 
-    } catch (error) {
-        console.log(`   Falha interna: ${error.message}`);
-        return `<p style="color:red">Erro ao analisar PR #${prId}: ${error.message}</p>`;
-    }
-}
+# Sua chave de API do Google Gemini
+GOOGLE_API_KEY=sua_chave_gemini_aqui
 
-async function main() {
-    console.log("Iniciando script de análise...");
+# Nome INTERNO do campo no Card onde a análise será gravada
+# Exemplo: Custom.JustificativaDod ou System.History
+FIELD_UPDATE_ANALYSIS=Custom.JustificativaDod
 
-    if (!ADO_PAT || !GOOGLE_API_KEY) process.exit(1);
+```
 
-    try {
-        const authHandler = azureDevOps.getPersonalAccessTokenHandler(ADO_PAT);
-        const connection = new azureDevOps.WebApi(ORG_URL, authHandler);
-        const gitApi = await connection.getGitApi();
-        const workItemApi = await connection.getWorkItemTrackingApi();
+## 🚀 Como Utilizar
 
-        console.log("Escolha o modo de operação:");
-        console.log("1 - Analisar um Pull Request específico");
-        console.log("2 - Analisar um Card (e todos os PRs vinculados)");
-        
-        const modeInput = await askQuestion("-> Digite 1 ou 2: ");
-        const idInput = await askQuestion("-> Digite o ID: ");
-        const ID = parseInt(idInput.trim());
+### 1. Rodando via Código Fonte
 
-        if (!ID) { console.error("ID inválido."); process.exit(1); }
+```bash
+npm install
+node index.js
 
-        let wiId = null;
-        let prsParaAnalisar = new Set();
+```
 
-        if (modeInput.trim() === '1') {
-            // MODO PR
-            console.log(`\nBuscando Card vinculado ao PR ${ID}...`);
-            const pr = await gitApi.getPullRequestById(ID);
-            const workItemRefs = await gitApi.getPullRequestWorkItemRefs(pr.repository.id, ID);
+Siga o menu interativo:
 
-            if (!workItemRefs || workItemRefs.length === 0) {
-                console.error("Nenhum Card vinculado a este PR.");
-                return;
-            }
-            wiId = parseInt(workItemRefs[0].url.split('/').pop());
-            prsParaAnalisar.add(ID);
+* **Opção 1:** Digite o ID do PR. O script buscará o card pai automaticamente.
+* **Opção 2:** Digite o ID do Card. O script buscará todos os PRs vinculados a ele na aba "Links".
 
-        } else {
-            // MODO CARD
-            console.log(`\nBuscando PRs vinculados ao Card ${ID}...`);
-            wiId = ID;
-            
-            const workItemCheck = await workItemApi.getWorkItem(wiId, null, null, 1);
-            
-            if (workItemCheck.relations) {
-                console.log(`Analisando ${workItemCheck.relations.length} relações...`);
-                
-                workItemCheck.relations.forEach(rel => {
-                    const url = rel.url ? rel.url.toLowerCase() : '';
-                    
-                    if (url.includes('pullrequestid')) {
+### 2. Gerando Executável (.exe)
 
-                        const decodedUrl = decodeURIComponent(rel.url);
+Para distribuir para a equipe (Product Owners, QAs ou Devs) sem necessidade de instalar Node.js:
 
-                        const match = decodedUrl.match(/\/(\d+)$/);
-                        
-                        if (match && match[1]) {
-                            const foundId = parseInt(match[1]);
-                            console.log(`Identificado PR #${foundId}`);
-                            prsParaAnalisar.add(foundId);
-                        } else {
-                            const parts = decodedUrl.split('/');
-                            const lastPart = parts[parts.length - 1];
-                            if (!isNaN(parseInt(lastPart))) {
-                                prsParaAnalisar.add(parseInt(lastPart));
-                            }
-                        }
-                    }
-                });
-            }
+1. Instale o `pkg`: `npm install -g pkg`
+2. Compile:
+```bash
+pkg . --targets node18-win-x64 --output validador-req.exe
 
-            if (prsParaAnalisar.size === 0) {
-                console.error("Nenhum PR encontrado. Verifique se os links no card são realmente Pull Requests.");
-                return;
-            }
-        }
+```
 
-        console.log(`\nObtendo requisitos do Card ${wiId}...`);
-        const workItem = await workItemApi.getWorkItem(wiId);
-        const title = workItem.fields['System.Title'];
-        const description = workItem.fields['System.Description'] || '';
-        const acceptanceCriteria = workItem.fields['Microsoft.VSTS.Common.AcceptanceCriteria'] || '';
 
-        const requirementsText = `TÍTULO: ${title}\nDESCRIÇÃO: ${description}\nCRITÉRIOS: ${acceptanceCriteria}`;
+3. **Distribuição:** Entregue o arquivo `.exe` junto com o arquivo `.env` configurado.
 
-        let relatorioFinal = `<h2>Relatório Gemini AI (${modeInput.trim() === '1' ? 'PR Único' : 'Completo'})</h2><p>Data: ${new Date().toLocaleString()}</p><hr>`;
+## 🧠 Critérios da IA
 
-        const listaPrs = Array.from(prsParaAnalisar);
+O prompt enviado ao Gemini segue estritamente estas diretrizes:
 
-        for (const prId of listaPrs) {
-            const analiseHTML = await analisarPR(gitApi, prId, requirementsText);
-            relatorioFinal += analiseHTML;
-        }
+1. Verificar se o código atende à **DESCRIÇÃO** e **CRITÉRIOS DE ACEITE**.
+2. Ignorar estilo, focar na **REGRA DE NEGÓCIO**.
+3. Ignorar questões técnicas que não impactam a regra.
+4. Indicar se faltar algo (mesmo que possa estar em outro PR).
+5. Veredito explícito: **APROVADO** ou **REPROVADO**.
 
-        console.log("\nAtualizando o Card com a análise...");
-        
-        const patchDocument = [
-            {
-                "op": "add",
-                "path": "/fields/" + FIELD_UPDATE_ANALYSIS,
-                "value": relatorioFinal
-            }
-        ];
+## 🐛 Troubleshooting
 
-        await workItemApi.updateWorkItem(null, patchDocument, wiId);
-        console.log(`Sucesso! Card ${wiId} atualizado.`);
-    } catch (error) {
-        console.error("Erro fatal:", error);
-    }
-}
-
-main();
+* **Erro "Project not found":** Verifique a `ORG_URL` no `.env`.
+* **Nenhum PR encontrado (Modo 2):** Certifique-se de que os PRs estão vinculados na aba "Links" ou "Relations" do Work Item e que o tipo do link é "Pull Request".
+* **Erro no campo de destino:** Se o script der erro ao salvar no card, verifique se o nome em `FIELD_UPDATE_ANALYSIS` corresponde exatamente ao *Reference Name* do campo no Azure.
