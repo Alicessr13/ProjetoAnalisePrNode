@@ -8,6 +8,7 @@ const ORG_URL = process.env.ORG_URL;
 const ADO_PAT = process.env.ADO_PAT;
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 const FIELD_UPDATE_ANALYSIS = process.env.FIELD_UPDATE_ANALYSIS;
+const MODEL_NAME = process.env.MODEL_NAME || "gemini-2.5-flash";
 
 const askQuestion = (query) => {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -174,7 +175,7 @@ async function main() {
         console.log(`\nEnviando contexto consolidado (${codigoConsolidado.length} chars) para o Gemini...`);
 
         const genAI = new GoogleGenerativeAI(GOOGLE_API_KEY);
-        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+        const model = genAI.getGenerativeModel({ model: MODEL_NAME });
 
         const prompt = `
         Você é um Tech Lead especialista em Code Review.
